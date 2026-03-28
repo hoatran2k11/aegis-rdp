@@ -18,6 +18,25 @@ typedef struct {
 IPStats ip_list[MAX_IP];
 int ip_count = 0;
 
+// 🔥 DEBUG: in lỗi Windows
+void print_error(const char* msg) {
+    DWORD err = GetLastError();
+    LPVOID buffer;
+
+    FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        NULL,
+        err,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPSTR)&buffer,
+        0,
+        NULL
+    );
+
+    printf("[ERROR] %s | Code: %lu | Message: %s\n", msg, err, (char*)buffer);
+    LocalFree(buffer);
+}
+
 IPStats* get_ip(const char* ip) {
     for (int i = 0; i < ip_count; i++) {
         if (strcmp(ip_list[i].ip, ip) == 0)
@@ -35,7 +54,7 @@ IPStats* get_ip(const char* ip) {
 }
 
 void process_ip(const char* ip) {
-    if (strcmp(ip, "-") == 0) return; // ignore local
+    if (strcmp(ip, "-") == 0) return;
 
     IPStats* stat = get_ip(ip);
     if (!stat) return;
@@ -77,6 +96,8 @@ void parse_event_xml(const wchar_t* xml) {
 }
 
 int main() {
+    printf("[DEBUG] Starting AegisRDP...\n");
+
     EVT_HANDLE hResults = NULL;
     EVT_HANDLE hEvents[10];
     DWORD returned = 0;
@@ -85,29 +106,51 @@ int main() {
 
     hResults = EvtQuery(NULL, L"Security", query, EvtQueryReverseDirection);
     if (!hResults) {
-        printf("Failed to query events\n");
+        print_error("EvtQuery failed");
         return 1;
     }
 
+    printf("[DEBUG] Query success, waiting for events...\n");
+
     while (1) {
         if (!EvtNext(hResults, 10, hEvents, INFINITE, 0, &returned)) {
+            DWORD err = GetLastError();
+
+            if (err != ERROR_NO_MORE_ITEMS) {
+                print_error("EvtNext failed");
+            }
+
             Sleep(1000);
             continue;
         }
 
         for (DWORD i = 0; i < returned; i++) {
-            DWORD bufferSize = 0;
             DWORD bufferUsed = 0;
             DWORD propCount = 0;
 
-            EvtRender(NULL, hEvents[i], EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount);
+            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount)) {
+                if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+                    print_error("EvtRender size query failed");
+                    EvtClose(hEvents[i]);
+                    continue;
+                }
+            }
 
             wchar_t* buffer = (wchar_t*)malloc(bufferUsed);
-            if (!buffer) continue;
-
-            if (EvtRender(NULL, hEvents[i], EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount)) {
-                parse_event_xml(buffer);
+            if (!buffer) {
+                printf("[ERROR] Memory allocation failed\n");
+                EvtClose(hEvents[i]);
+                continue;
             }
+
+            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount)) {
+                print_error("EvtRender failed");
+                free(buffer);
+                EvtClose(hEvents[i]);
+                continue;
+            }
+
+            parse_event_xml(buffer);
 
             free(buffer);
             EvtClose(hEvents[i]);
