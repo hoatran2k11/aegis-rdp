@@ -1,0 +1,27 @@
+name: Build AegisRDP
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Compile
+      run: |
+        cl main.c /Fe:aegisrdp.exe wevtapi.lib
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: aegisrdp-build
+        path: aegisrdp.exe
