@@ -83,54 +83,74 @@ void process_ip(const char *ip)
     }
 }
 
-// xử lý từng event callback
+// render event XML
+DWORD render_event_xml(EVT_HANDLE hEvent, char *xml_buffer, size_t buffer_size)
+{
+    DWORD bufferUsed = 0, propCount = 0;
+    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, (DWORD)buffer_size, NULL, &bufferUsed, &propCount))
+    {
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+            return 1;
+    }
+
+    wchar_t *wbuffer = (wchar_t *)malloc(bufferUsed);
+    if (!wbuffer)
+        return 2;
+
+    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, bufferUsed, wbuffer, &bufferUsed, &propCount))
+    {
+        free(wbuffer);
+        return 3;
+    }
+
+    wcstombs(xml_buffer, wbuffer, buffer_size);
+    free(wbuffer);
+    return 0;
+}
+
+// callback push subscription
 DWORD WINAPI EventCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID userContext, EVT_HANDLE hEvent)
 {
-    if (action == EvtSubscribeActionDeliver)
+    UNREFERENCED_PARAMETER(userContext);
+
+    if (action == EvtSubscribeActionError)
     {
-        DWORD bufferUsed = 0, propCount = 0;
-        if (!EvtRender(NULL, hEvent, EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount))
-        {
-            if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-                return 0;
-        }
+        DWORD status = (DWORD)(uintptr_t)hEvent;
+        if (status == ERROR_EVT_QUERY_RESULT_STALE)
+            printf("[ERROR] Subscription callback: Event records missing.\n");
+        else
+            printf("[ERROR] Subscription callback Win32 error: %lu\n", status);
+        return status;
+    }
+    else if (action == EvtSubscribeActionDeliver)
+    {
+        char xml[8192] = {0};
+        if (render_event_xml(hEvent, xml, sizeof(xml)) != 0)
+            return 1;
 
-        wchar_t *buffer = (wchar_t *)malloc(bufferUsed);
-        if (!buffer)
-            return 0;
-
-        if (!EvtRender(NULL, hEvent, EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount))
-        {
-            free(buffer);
-            return 0;
-        }
-
-        // parse XML
-        char xml_buffer[8192];
-        wcstombs(xml_buffer, buffer, sizeof(xml_buffer));
-        free(buffer);
-
-        if (!strstr(xml_buffer, "Name=\"LogonType\">10"))
+        if (!strstr(xml, "Name=\"LogonType\">10"))
             return 0; // không phải RDP
 
-        char *ip_pos = strstr(xml_buffer, "Name=\"IpAddress\"");
+        char *ip_pos = strstr(xml, "Name=\"IpAddress\"");
         if (!ip_pos)
             return 0;
 
         char *value = strstr(ip_pos, ">");
         if (!value)
             return 0;
-
         value += 1;
+
         char *end = strstr(value, "</Data>");
         if (!end)
             return 0;
 
         char ip[64] = {0};
         strncpy(ip, value, end - value);
+        ip[end - value] = '\0';
 
         process_ip(ip);
     }
+
     return 0;
 }
 
@@ -158,8 +178,6 @@ int main()
     }
 
     printf("[DEBUG] Listening for new RDP failure events...\n");
-
-    // vòng lặp giữ chương trình chạy
     while (1)
         Sleep(1000);
 
