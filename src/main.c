@@ -9,7 +9,8 @@
 #define THRESHOLD 5
 #define TIME_WINDOW 30
 
-typedef struct {
+typedef struct
+{
     char ip[64];
     int fail_count;
     time_t first_time;
@@ -18,8 +19,8 @@ typedef struct {
 IPStats ip_list[MAX_IP];
 int ip_count = 0;
 
-// 🔥 DEBUG: in lỗi Windows
-void print_error(const char* msg) {
+void print_error(const char *msg)
+{
     DWORD err = GetLastError();
     LPVOID buffer;
 
@@ -30,20 +31,22 @@ void print_error(const char* msg) {
         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         (LPSTR)&buffer,
         0,
-        NULL
-    );
+        NULL);
 
-    printf("[ERROR] %s | Code: %lu | Message: %s\n", msg, err, (char*)buffer);
+    printf("[ERROR] %s | Code: %lu | Message: %s\n", msg, err, (char *)buffer);
     LocalFree(buffer);
 }
 
-IPStats* get_ip(const char* ip) {
-    for (int i = 0; i < ip_count; i++) {
+IPStats *get_ip(const char *ip)
+{
+    for (int i = 0; i < ip_count; i++)
+    {
         if (strcmp(ip_list[i].ip, ip) == 0)
             return &ip_list[i];
     }
 
-    if (ip_count < MAX_IP) {
+    if (ip_count < MAX_IP)
+    {
         strcpy(ip_list[ip_count].ip, ip);
         ip_list[ip_count].fail_count = 0;
         ip_list[ip_count].first_time = time(NULL);
@@ -53,15 +56,22 @@ IPStats* get_ip(const char* ip) {
     return NULL;
 }
 
-void process_ip(const char* ip) {
-    if (strcmp(ip, "-") == 0) return;
+void process_ip(const char *ip)
+{
+    if (strcmp(ip, "-") == 0 || strlen(ip) == 0)
+    {
+        printf("[DEBUG] Invalid IP ignored\n");
+        return;
+    }
 
-    IPStats* stat = get_ip(ip);
-    if (!stat) return;
+    IPStats *stat = get_ip(ip);
+    if (!stat)
+        return;
 
     time_t now = time(NULL);
 
-    if (difftime(now, stat->first_time) > TIME_WINDOW) {
+    if (difftime(now, stat->first_time) > TIME_WINDOW)
+    {
         stat->fail_count = 0;
         stat->first_time = now;
     }
@@ -70,32 +80,52 @@ void process_ip(const char* ip) {
 
     printf("[FAIL] IP: %s | Count: %d\n", ip, stat->fail_count);
 
-    if (stat->fail_count >= THRESHOLD) {
+    if (stat->fail_count >= THRESHOLD)
+    {
         printf(">>> BRUTE DETECTED: %s <<<\n", ip);
     }
 }
 
-void parse_event_xml(const wchar_t* xml) {
-    char buffer[4096];
+void parse_event_xml(const wchar_t *xml)
+{
+    char buffer[8192];
     wcstombs(buffer, xml, sizeof(buffer));
 
-    char* ip_pos = strstr(buffer, "Source Network Address");
-    if (!ip_pos) return;
+    printf("[DEBUG] Event received\n");
 
-    char* value = strstr(ip_pos, "<Data>");
-    if (!value) return;
+    if (!strstr(buffer, "Name=\"LogonType\">10"))
+    {
+        printf("[DEBUG] Not RDP logon (skip)\n");
+        return;
+    }
 
-    value += 6;
-    char* end = strstr(value, "</Data>");
-    if (!end) return;
+    char *ip_pos = strstr(buffer, "Name=\"IpAddress\"");
+    if (!ip_pos)
+    {
+        printf("[DEBUG] IpAddress not found\n");
+        return;
+    }
+
+    char *value = strstr(ip_pos, ">");
+    if (!value)
+        return;
+
+    value += 1;
+
+    char *end = strstr(value, "</Data>");
+    if (!end)
+        return;
 
     char ip[64] = {0};
     strncpy(ip, value, end - value);
 
+    printf("[DEBUG] Extracted IP: %s\n", ip);
+
     process_ip(ip);
 }
 
-int main() {
+int main()
+{
     printf("[DEBUG] Starting AegisRDP...\n");
 
     EVT_HANDLE hResults = NULL;
@@ -105,18 +135,22 @@ int main() {
     LPCWSTR query = L"*[System[(EventID=4625)]]";
 
     hResults = EvtQuery(NULL, L"Security", query, EvtQueryReverseDirection);
-    if (!hResults) {
+    if (!hResults)
+    {
         print_error("EvtQuery failed");
         return 1;
     }
 
     printf("[DEBUG] Query success, waiting for events...\n");
 
-    while (1) {
-        if (!EvtNext(hResults, 10, hEvents, INFINITE, 0, &returned)) {
+    while (1)
+    {
+        if (!EvtNext(hResults, 10, hEvents, INFINITE, 0, &returned))
+        {
             DWORD err = GetLastError();
 
-            if (err != ERROR_NO_MORE_ITEMS) {
+            if (err != ERROR_NO_MORE_ITEMS)
+            {
                 print_error("EvtNext failed");
             }
 
@@ -124,26 +158,31 @@ int main() {
             continue;
         }
 
-        for (DWORD i = 0; i < returned; i++) {
+        for (DWORD i = 0; i < returned; i++)
+        {
             DWORD bufferUsed = 0;
             DWORD propCount = 0;
 
-            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount)) {
-                if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount))
+            {
+                if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+                {
                     print_error("EvtRender size query failed");
                     EvtClose(hEvents[i]);
                     continue;
                 }
             }
 
-            wchar_t* buffer = (wchar_t*)malloc(bufferUsed);
-            if (!buffer) {
+            wchar_t *buffer = (wchar_t *)malloc(bufferUsed);
+            if (!buffer)
+            {
                 printf("[ERROR] Memory allocation failed\n");
                 EvtClose(hEvents[i]);
                 continue;
             }
 
-            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount)) {
+            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount))
+            {
                 print_error("EvtRender failed");
                 free(buffer);
                 EvtClose(hEvents[i]);
