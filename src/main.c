@@ -19,6 +19,7 @@ typedef struct
 IPStats ip_list[MAX_IP];
 int ip_count = 0;
 
+// 🔥 DEBUG: in lỗi Windows
 void print_error(const char *msg)
 {
     DWORD err = GetLastError();
@@ -59,10 +60,7 @@ IPStats *get_ip(const char *ip)
 void process_ip(const char *ip)
 {
     if (strcmp(ip, "-") == 0 || strlen(ip) == 0)
-    {
-        printf("[DEBUG] Invalid IP ignored\n");
         return;
-    }
 
     IPStats *stat = get_ip(ip);
     if (!stat)
@@ -77,7 +75,6 @@ void process_ip(const char *ip)
     }
 
     stat->fail_count++;
-
     printf("[FAIL] IP: %s | Count: %d\n", ip, stat->fail_count);
 
     if (stat->fail_count >= THRESHOLD)
@@ -86,116 +83,86 @@ void process_ip(const char *ip)
     }
 }
 
-void parse_event_xml(const wchar_t *xml)
+// xử lý từng event callback
+DWORD WINAPI EventCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID userContext, EVT_HANDLE hEvent)
 {
-    char buffer[8192];
-    wcstombs(buffer, xml, sizeof(buffer));
-
-    printf("[DEBUG] Event received\n");
-
-    if (!strstr(buffer, "Name=\"LogonType\">10"))
+    if (action == EvtSubscribeActionDeliver)
     {
-        printf("[DEBUG] Not RDP logon (skip)\n");
-        return;
+        DWORD bufferUsed = 0, propCount = 0;
+        if (!EvtRender(NULL, hEvent, EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount))
+        {
+            if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+                return 0;
+        }
+
+        wchar_t *buffer = (wchar_t *)malloc(bufferUsed);
+        if (!buffer)
+            return 0;
+
+        if (!EvtRender(NULL, hEvent, EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount))
+        {
+            free(buffer);
+            return 0;
+        }
+
+        // parse XML
+        char xml_buffer[8192];
+        wcstombs(xml_buffer, buffer, sizeof(xml_buffer));
+        free(buffer);
+
+        if (!strstr(xml_buffer, "Name=\"LogonType\">10"))
+            return 0; // không phải RDP
+
+        char *ip_pos = strstr(xml_buffer, "Name=\"IpAddress\"");
+        if (!ip_pos)
+            return 0;
+
+        char *value = strstr(ip_pos, ">");
+        if (!value)
+            return 0;
+
+        value += 1;
+        char *end = strstr(value, "</Data>");
+        if (!end)
+            return 0;
+
+        char ip[64] = {0};
+        strncpy(ip, value, end - value);
+
+        process_ip(ip);
     }
-
-    char *ip_pos = strstr(buffer, "Name=\"IpAddress\"");
-    if (!ip_pos)
-    {
-        printf("[DEBUG] IpAddress not found\n");
-        return;
-    }
-
-    char *value = strstr(ip_pos, ">");
-    if (!value)
-        return;
-
-    value += 1;
-
-    char *end = strstr(value, "</Data>");
-    if (!end)
-        return;
-
-    char ip[64] = {0};
-    strncpy(ip, value, end - value);
-
-    printf("[DEBUG] Extracted IP: %s\n", ip);
-
-    process_ip(ip);
+    return 0;
 }
 
 int main()
 {
-    printf("[DEBUG] Starting AegisRDP...\n");
-
-    EVT_HANDLE hResults = NULL;
-    EVT_HANDLE hEvents[10];
-    DWORD returned = 0;
+    printf("[DEBUG] Starting AegisRDP (live capture)...\n");
 
     LPCWSTR query = L"*[System[(EventID=4625)]]";
 
-    hResults = EvtQuery(NULL, L"Security", query, EvtQueryReverseDirection);
-    if (!hResults)
+    EVT_HANDLE hSub = EvtSubscribe(
+        NULL,
+        NULL,
+        L"Security",
+        query,
+        NULL,
+        NULL,
+        (EVT_SUBSCRIBE_CALLBACK)EventCallback,
+        EvtSubscribeToFutureEvents
+    );
+
+    if (!hSub)
     {
-        print_error("EvtQuery failed");
+        print_error("EvtSubscribe failed");
         return 1;
     }
 
-    printf("[DEBUG] Query success, waiting for events...\n");
+    printf("[DEBUG] Listening for new RDP failure events...\n");
 
+    // vòng lặp giữ chương trình chạy
     while (1)
-    {
-        if (!EvtNext(hResults, 10, hEvents, INFINITE, 0, &returned))
-        {
-            DWORD err = GetLastError();
+        Sleep(1000);
 
-            if (err != ERROR_NO_MORE_ITEMS)
-            {
-                print_error("EvtNext failed");
-            }
-
-            Sleep(1000);
-            continue;
-        }
-
-        for (DWORD i = 0; i < returned; i++)
-        {
-            DWORD bufferUsed = 0;
-            DWORD propCount = 0;
-
-            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount))
-            {
-                if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-                {
-                    print_error("EvtRender size query failed");
-                    EvtClose(hEvents[i]);
-                    continue;
-                }
-            }
-
-            wchar_t *buffer = (wchar_t *)malloc(bufferUsed);
-            if (!buffer)
-            {
-                printf("[ERROR] Memory allocation failed\n");
-                EvtClose(hEvents[i]);
-                continue;
-            }
-
-            if (!EvtRender(NULL, hEvents[i], EvtRenderEventXml, bufferUsed, buffer, &bufferUsed, &propCount))
-            {
-                print_error("EvtRender failed");
-                free(buffer);
-                EvtClose(hEvents[i]);
-                continue;
-            }
-
-            parse_event_xml(buffer);
-
-            free(buffer);
-            EvtClose(hEvents[i]);
-        }
-    }
-
-    EvtClose(hResults);
+    EvtClose(hSub);
     return 0;
 }
