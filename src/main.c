@@ -2,24 +2,25 @@
 #include <winevt.h>
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
+#include <stdlib.h>
 
 #pragma comment(lib, "wevtapi.lib")
 
 #define MAX_IP 100
+#define MAX_FAILS 100
 #define THRESHOLD 5
-#define TIME_WINDOW 30
+#define TIME_WINDOW 60
 
-typedef struct
-{
+typedef struct {
     char ip[64];
+    time_t fails[MAX_FAILS];
     int fail_count;
-    time_t first_time;
 } IPStats;
 
 IPStats ip_list[MAX_IP];
 int ip_count = 0;
 
-// 🔥 DEBUG: in lỗi Windows
 void print_error(const char *msg)
 {
     DWORD err = GetLastError();
@@ -27,12 +28,8 @@ void print_error(const char *msg)
 
     FormatMessageA(
         FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        err,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPSTR)&buffer,
-        0,
-        NULL);
+        NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        (LPSTR)&buffer, 0, NULL);
 
     printf("[ERROR] %s | Code: %lu | Message: %s\n", msg, err, (char *)buffer);
     LocalFree(buffer);
@@ -50,16 +47,14 @@ IPStats *get_ip(const char *ip)
     {
         strcpy(ip_list[ip_count].ip, ip);
         ip_list[ip_count].fail_count = 0;
-        ip_list[ip_count].first_time = time(NULL);
         return &ip_list[ip_count++];
     }
-
     return NULL;
 }
 
 void process_ip(const char *ip)
 {
-    if (strcmp(ip, "-") == 0 || strlen(ip) == 0)
+    if (!ip || strcmp(ip, "-") == 0 || strlen(ip) == 0)
         return;
 
     IPStats *stat = get_ip(ip);
@@ -68,26 +63,33 @@ void process_ip(const char *ip)
 
     time_t now = time(NULL);
 
-    if (difftime(now, stat->first_time) > TIME_WINDOW)
+    if (stat->fail_count < MAX_FAILS)
+        stat->fails[stat->fail_count++] = now;
+    else
     {
-        stat->fail_count = 0;
-        stat->first_time = now;
+        memmove(stat->fails, stat->fails + 1, sizeof(time_t) * (MAX_FAILS - 1));
+        stat->fails[MAX_FAILS - 1] = now;
     }
 
-    stat->fail_count++;
-    printf("[FAIL] IP: %s | Count: %d\n", ip, stat->fail_count);
+    int valid_count = 0;
+    for (int i = 0; i < stat->fail_count; i++)
+    {
+        if (difftime(now, stat->fails[i]) <= TIME_WINDOW)
+            stat->fails[valid_count++] = stat->fails[i];
+    }
+    stat->fail_count = valid_count;
+
+    printf("[FAIL] IP: %s | Count in window: %d\n", ip, stat->fail_count);
 
     if (stat->fail_count >= THRESHOLD)
-    {
         printf(">>> BRUTE DETECTED: %s <<<\n", ip);
-    }
 }
 
-// render event XML
-DWORD render_event_xml(EVT_HANDLE hEvent, char *xml_buffer, size_t buffer_size)
+DWORD render_event_xml(EVT_HANDLE hEvent, char **xml_buffer)
 {
     DWORD bufferUsed = 0, propCount = 0;
-    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, (DWORD)buffer_size, NULL, &bufferUsed, &propCount))
+
+    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount))
     {
         if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
             return 1;
@@ -103,12 +105,18 @@ DWORD render_event_xml(EVT_HANDLE hEvent, char *xml_buffer, size_t buffer_size)
         return 3;
     }
 
-    wcstombs(xml_buffer, wbuffer, buffer_size);
+    *xml_buffer = (char *)malloc(bufferUsed * 2);
+    if (!(*xml_buffer))
+    {
+        free(wbuffer);
+        return 4;
+    }
+
+    wcstombs(*xml_buffer, wbuffer, bufferUsed * 2);
     free(wbuffer);
     return 0;
 }
 
-// callback push subscription
 DWORD WINAPI EventCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID userContext, EVT_HANDLE hEvent)
 {
     UNREFERENCED_PARAMETER(userContext);
@@ -124,31 +132,44 @@ DWORD WINAPI EventCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID userContext
     }
     else if (action == EvtSubscribeActionDeliver)
     {
-        char xml[8192] = {0};
-        if (render_event_xml(hEvent, xml, sizeof(xml)) != 0)
+        char *xml = NULL;
+        if (render_event_xml(hEvent, &xml) != 0)
             return 1;
 
         if (!strstr(xml, "Name=\"LogonType\">10"))
-            return 0; // không phải RDP
+        {
+            free(xml);
+            return 0;
+        }
 
         char *ip_pos = strstr(xml, "Name=\"IpAddress\"");
         if (!ip_pos)
+        {
+            free(xml);
             return 0;
+        }
 
-        char *value = strstr(ip_pos, ">");
+        char *value = strchr(ip_pos, '>');
         if (!value)
+        {
+            free(xml);
             return 0;
+        }
         value += 1;
 
         char *end = strstr(value, "</Data>");
         if (!end)
+        {
+            free(xml);
             return 0;
+        }
 
         char ip[64] = {0};
         strncpy(ip, value, end - value);
         ip[end - value] = '\0';
 
         process_ip(ip);
+        free(xml);
     }
 
     return 0;
