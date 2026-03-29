@@ -1,207 +1,104 @@
 #include <windows.h>
 #include <winevt.h>
 #include <stdio.h>
-#include <time.h>
 #include <string.h>
-#include <stdlib.h>
+#include <time.h>
 
 #pragma comment(lib, "wevtapi.lib")
 
-#define MAX_IP 100
-#define MAX_FAILS 100
-#define THRESHOLD 5
-#define TIME_WINDOW 60
+#define BRUTE_THRESHOLD 5
+#define TIME_WINDOW 60 
 
 typedef struct {
-    char ip[64];
-    time_t fails[MAX_FAILS];
-    int fail_count;
-} IPStats;
+    char ip[46];
+    int count;
+    time_t lastSeen;
+} AttackTracker;
 
-IPStats ip_list[MAX_IP];
-int ip_count = 0;
+AttackTracker tracker[100];
+int trackerCount = 0;
 
-void print_error(const char *msg)
-{
-    DWORD err = GetLastError();
-    LPVOID buffer;
-
-    FormatMessageA(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPSTR)&buffer, 0, NULL);
-
-    printf("[ERROR] %s | Code: %lu | Message: %s\n", msg, err, (char *)buffer);
-    LocalFree(buffer);
+void ExecuteBlock(const char* ip) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall add rule name=\"AegisRDP_Block_%s\" dir=in action=block remoteip=%s", ip, ip);
+    if (system(cmd) == 0) {
+        printf("[+] BLOCK APPLIED: %s\n", ip);
+    }
 }
 
-IPStats *get_ip(const char *ip)
-{
-    for (int i = 0; i < ip_count; i++)
-    {
-        if (strcmp(ip_list[i].ip, ip) == 0)
-            return &ip_list[i];
-    }
-
-    if (ip_count < MAX_IP)
-    {
-        strcpy(ip_list[ip_count].ip, ip);
-        ip_list[ip_count].fail_count = 0;
-        return &ip_list[ip_count++];
-    }
-    return NULL;
-}
-
-void process_ip(const char *ip)
-{
-    if (!ip || strcmp(ip, "-") == 0 || strlen(ip) == 0)
-        return;
-
-    IPStats *stat = get_ip(ip);
-    if (!stat)
-        return;
-
+void LogFailure(const char* ip) {
     time_t now = time(NULL);
+    for (int i = 0; i < trackerCount; i++) {
+        if (strcmp(tracker[i].ip, ip) == 0) {
+            if (difftime(now, tracker[i].lastSeen) > TIME_WINDOW) tracker[i].count = 1;
+            else tracker[i].count++;
 
-    if (stat->fail_count < MAX_FAILS)
-        stat->fails[stat->fail_count++] = now;
-    else
-    {
-        memmove(stat->fails, stat->fails + 1, sizeof(time_t) * (MAX_FAILS - 1));
-        stat->fails[MAX_FAILS - 1] = now;
+            tracker[i].lastSeen = now;
+            printf("[FAIL] IP: %s | Count: %d\n", ip, tracker[i].count);
+
+            if (tracker[i].count >= BRUTE_THRESHOLD) {
+                printf("\n>>> BRUTE DETECTED: %s <<<\n", ip);
+                ExecuteBlock(ip);
+                tracker[i].count = 0; // Reset after block
+            }
+            return;
+        }
     }
 
-    int valid_count = 0;
-    for (int i = 0; i < stat->fail_count; i++)
-    {
-        if (difftime(now, stat->fails[i]) <= TIME_WINDOW)
-            stat->fails[valid_count++] = stat->fails[i];
+    if (trackerCount < 100) {
+        strcpy(tracker[trackerCount].ip, ip);
+        tracker[trackerCount].count = 1;
+        tracker[trackerCount].lastSeen = now;
+        trackerCount++;
+        printf("[FAIL] IP: %s | Count: 1\n", ip);
     }
-    stat->fail_count = valid_count;
-
-    printf("[FAIL] IP: %s | Count in window: %d\n", ip, stat->fail_count);
-
-    if (stat->fail_count >= THRESHOLD)
-        printf(">>> BRUTE DETECTED: %s <<<\n", ip);
 }
 
-DWORD render_event_xml(EVT_HANDLE hEvent, char **xml_buffer)
-{
-    DWORD bufferUsed = 0, propCount = 0;
+DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pContext, EVT_HANDLE hEvent) {
+    if (action == EvtSubscribeActionDeliver) {
+        DWORD bufferUsed = 0, propertyCount = 0;
+        EvtRender(NULL, hEvent, EvtRenderEventXml, 0, NULL, &bufferUsed, &propertyCount);
+        
+        LPWSTR xmlBuffer = (LPWSTR)malloc(bufferUsed);
+        if (xmlBuffer && EvtRender(NULL, hEvent, EvtRenderEventXml, bufferUsed, xmlBuffer, &bufferUsed, &propertyCount)) {
+            char* narrowXml = (char*)malloc(bufferUsed);
+            wcstombs(narrowXml, xmlBuffer, bufferUsed);
 
-    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, 0, NULL, &bufferUsed, &propCount))
-    {
-        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
-            return 1;
+            char* ipField = strstr(narrowXml, "IpAddress\">");
+            if (ipField) {
+                ipField += 11;
+                char extractedIp[46] = {0};
+                for (int i = 0; ipField[i] != '<' && i < 45; i++) extractedIp[i] = ipField[i];
+                if (strlen(extractedIp) > 0 && strcmp(extractedIp, "-") != 0) LogFailure(extractedIp);
+            }
+            free(narrowXml);
+        }
+        if (xmlBuffer) free(xmlBuffer);
     }
-
-    wchar_t *wbuffer = (wchar_t *)malloc(bufferUsed);
-    if (!wbuffer)
-        return 2;
-
-    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, bufferUsed, wbuffer, &bufferUsed, &propCount))
-    {
-        free(wbuffer);
-        return 3;
-    }
-
-    *xml_buffer = (char *)malloc(bufferUsed * 2);
-    if (!(*xml_buffer))
-    {
-        free(wbuffer);
-        return 4;
-    }
-
-    wcstombs(*xml_buffer, wbuffer, bufferUsed * 2);
-    free(wbuffer);
     return 0;
 }
 
-DWORD WINAPI EventCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID userContext, EVT_HANDLE hEvent)
-{
-    UNREFERENCED_PARAMETER(userContext);
+int main() {
+    EVT_HANDLE hSubscription = NULL;
 
-    if (action == EvtSubscribeActionError)
-    {
-        DWORD status = (DWORD)(uintptr_t)hEvent;
-        if (status == ERROR_EVT_QUERY_RESULT_STALE)
-            printf("[ERROR] Subscription callback: Event records missing.\n");
-        else
-            printf("[ERROR] Subscription callback Win32 error: %lu\n", status);
-        return status;
-    }
-    else if (action == EvtSubscribeActionDeliver)
-    {
-        char *xml = NULL;
-        if (render_event_xml(hEvent, &xml) != 0)
-            return 1;
+    printf("========================================\n");
+    printf("   AegisRDP v0.1.1-alpha\n");
+    printf("   Author: Hoa Tran | 2026\n");
+    printf("========================================\n");
 
-        if (!strstr(xml, "Name=\"LogonType\">10"))
-        {
-            free(xml);
-            return 0;
-        }
+    hSubscription = EvtSubscribe(NULL, NULL, L"Security", L"Event[System[(EventID=4625)]]", 
+                                 NULL, NULL, (EVT_SUBSCRIBE_CALLBACK)SubscriptionCallback, 
+                                 EvtSubscribeToFutureEvents);
 
-        char *ip_pos = strstr(xml, "Name=\"IpAddress\"");
-        if (!ip_pos)
-        {
-            free(xml);
-            return 0;
-        }
-
-        char *value = strchr(ip_pos, '>');
-        if (!value)
-        {
-            free(xml);
-            return 0;
-        }
-        value += 1;
-
-        char *end = strstr(value, "</Data>");
-        if (!end)
-        {
-            free(xml);
-            return 0;
-        }
-
-        char ip[64] = {0};
-        strncpy(ip, value, end - value);
-        ip[end - value] = '\0';
-
-        process_ip(ip);
-        free(xml);
-    }
-
-    return 0;
-}
-
-int main()
-{
-    printf("[DEBUG] Starting AegisRDP (live capture)...\n");
-
-    LPCWSTR query = L"*[System[(EventID=4625)]]";
-
-    EVT_HANDLE hSub = EvtSubscribe(
-        NULL,
-        NULL,
-        L"Security",
-        query,
-        NULL,
-        NULL,
-        (EVT_SUBSCRIBE_CALLBACK)EventCallback,
-        EvtSubscribeToFutureEvents
-    );
-
-    if (!hSub)
-    {
-        print_error("EvtSubscribe failed");
+    if (hSubscription == NULL) {
+        printf("[-] Failed to subscribe to events. Error: %lu\n", GetLastError());
         return 1;
     }
 
-    printf("[DEBUG] Listening for new RDP failure events...\n");
-    while (1)
-        Sleep(1000);
+    printf("[*] Real-time monitoring active. Press Ctrl+C to stop.\n");
 
-    EvtClose(hSub);
+    while (1) Sleep(1000); 
+
+    EvtClose(hSubscription);
     return 0;
 }
