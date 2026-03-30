@@ -16,9 +16,22 @@ jobs:
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
 
+    - name: Setup vcpkg
+      run: |
+        git clone https://github.com/microsoft/vcpkg
+        .\vcpkg\bootstrap-vcpkg.bat
+
+    - name: Install libxml2
+      run: |
+        .\vcpkg\vcpkg install libxml2:x64-windows
+
     - name: Compile
       run: |
-        cl src\main.c /Fe:aegisrdp.exe wevtapi.lib
+        cl src\main.c ^
+          /I vcpkg\installed\x64-windows\include ^
+          /link ^
+          /LIBPATH:vcpkg\installed\x64-windows\lib ^
+          libxml2.lib wevtapi.lib
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
