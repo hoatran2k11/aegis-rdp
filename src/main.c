@@ -16,6 +16,9 @@
 
 int DEBUG_MODE = 0;
 
+const char* LOG_FILE = "aegis-rdp.log";
+char* whitelist[] = {"127.0.0.1", "192.168.1.1", NULL};
+
 typedef struct {
     char ip[46];
     time_t timestamps[MAX_FAILS];
@@ -94,6 +97,42 @@ char* extract_value(const char* xml, const char* key) {
     return value;
 }
 
+int is_whitelisted(const char* ip) {
+    // Whitelist check: prevent blocking of trusted IPs
+    for (int i = 0; whitelist[i] != NULL; i++) {
+        if (strcmp(ip, whitelist[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+void log_to_file(const char* message) {
+    // File logging: append all fails and blocks to log file
+    FILE* f = fopen(LOG_FILE, "a");
+    if (f) {
+        time_t now = time(NULL);
+        char time_str[26];
+        ctime_s(time_str, sizeof(time_str), &now);
+        time_str[strlen(time_str) - 1] = '\0'; // Remove newline
+        fprintf(f, "[%s] %s\n", time_str, message);
+        fclose(f);
+    }
+}
+
+void block_ip(const char* ip) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall add rule name=\"AegisRDP_Block_%s\" dir=in action=block remoteip=%s", ip, ip);
+    if (system(cmd) == 0) {
+        printf("[+] BLOCK APPLIED: %s\n", ip);
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "BLOCKED IP: %s", ip);
+        log_to_file(log_msg);
+    } else {
+        printf("[-] Failed to block IP: %s\n", ip);
+    }
+}
+
 void LogFailure(const char* ip, int logonType) {
     time_t now = time(NULL);
     int found = -1;
@@ -146,8 +185,17 @@ void LogFailure(const char* ip, int logonType) {
     int currentCount = t->numTimestamps;
     printf("[FAIL] IP: %s | Count: %d | LogonType: %d | Delta: %.0f sec\n", ip, currentCount, logonType, delta);
 
+    char fail_msg[256];
+    snprintf(fail_msg, sizeof(fail_msg), "FAIL IP: %s | Count: %d | LogonType: %d", ip, currentCount, logonType);
+    log_to_file(fail_msg);
+
     if (currentCount >= THRESHOLD) {
         printf(">>> BRUTE DETECTED: %s <<<\n", ip);
+        if (!is_whitelisted(ip)) {
+            block_ip(ip);
+        } else {
+            printf("[INFO] IP %s is whitelisted, not blocking\n", ip);
+        }
     } else {
         printf("[INFO] Below threshold (%d/%d) for %s\n", currentCount, THRESHOLD, ip);
     }
@@ -264,7 +312,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("========================================\n");
-    printf("   AegisRDP v0.1.0-alpha\n");
+    printf("   AegisRDP v0.2.0-alpha\n");
     printf("   Author: Hoa Tran | 2026\n");
     printf("========================================\n");
 
