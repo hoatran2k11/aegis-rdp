@@ -45,19 +45,24 @@ static int ExtractXmlElementValue(const char *xml, const char *tag, char *out, i
 
 static int ExtractXmlDataValue(const char *xml, const char *name, char *out, int outSize) {
     if (!xml || !name || !out || outSize <= 0) return 0;
-    char pattern[128];
-    snprintf(pattern, sizeof(pattern), "<Data Name=\"%s\">", name);
-
-    const char *start = strstr(xml, pattern);
-    if (!start) return 0;
-    start += strlen(pattern);
-
-    const char *end = strchr(start, '<');
-    if (!end) return 0;
-
-    int len = (int)(end - start);
+    const char *dataTag = strstr(xml, "<Data Name=");
+    if (!dataTag) return 0;
+    const char *quote = dataTag + 11; // after <Data Name=
+    char quoteChar = *quote;
+    if (quoteChar != '"' && quoteChar != '\'') return 0;
+    const char *nameStart = quote + 1;
+    const char *nameEnd = strchr(nameStart, quoteChar);
+    if (!nameEnd) return 0;
+    int nameLen = (int)(nameEnd - nameStart);
+    if (nameLen != (int)strlen(name) || strncmp(nameStart, name, nameLen) != 0) return 0;
+    const char *valueStart = nameEnd + 1;
+    if (*valueStart != '>') return 0;
+    valueStart++;
+    const char *valueEnd = strstr(valueStart, "</Data>");
+    if (!valueEnd) return 0;
+    int len = (int)(valueEnd - valueStart);
     if (len >= outSize) len = outSize - 1;
-    memcpy(out, start, len);
+    memcpy(out, valueStart, len);
     out[len] = '\0';
     return len;
 }
@@ -184,6 +189,7 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
     }
 
     int logonType = atoi(logonTypeStr);
+    printf("[DEBUG] Parsed LogonType: %d, IP: '%s'\n", logonType, ip);
     if (logonType != 3 && logonType != 10) {
         printf("[DEBUG] LogonType %d not 3 or 10, ignoring (IP=%s)\n", logonType, ip);
         free(xml);
