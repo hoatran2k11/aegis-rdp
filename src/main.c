@@ -23,6 +23,7 @@ typedef struct {
     char ip[46];
     time_t timestamps[MAX_FAILS];
     int numTimestamps;
+    int isBlocked;
 } IPTracker;
 
 IPTracker trackers[MAX_IP];
@@ -162,6 +163,7 @@ void LogFailure(const char* ip, int logonType) {
         if (numTrackers < MAX_IP) {
             strcpy(trackers[numTrackers].ip, ip);
             trackers[numTrackers].numTimestamps = 0;
+            trackers[numTrackers].isBlocked = 0;
             found = numTrackers++;
         } else {
             printf("[WARN] MAX_IP reached, ignoring new IP %s\n", ip);
@@ -170,6 +172,11 @@ void LogFailure(const char* ip, int logonType) {
     }
 
     IPTracker *t = &trackers[found];
+
+    if (t->isBlocked) {
+        printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
+        return;
+    }
 
     int oldCount = t->numTimestamps;
     int j = 0;
@@ -205,6 +212,7 @@ void LogFailure(const char* ip, int logonType) {
 
     if (currentCount >= THRESHOLD) {
         printf(">>> BRUTE DETECTED: %s <<<\n", ip);
+        t->isBlocked = 1;
         if (!is_whitelisted(ip)) {
             block_ip(ip);
         } else {
