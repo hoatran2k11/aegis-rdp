@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <winevt.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -65,6 +67,56 @@ static int ExtractXmlDataValue(const char *xml, const char *name, char *out, int
     memcpy(out, valueStart, len);
     out[len] = '\0';
     return len;
+}
+
+static void ParseEventDataFields(const char *xmlText, int *outLogonType, char *outIp, size_t outIpSize, char *outUser, size_t outUserSize) {
+    *outLogonType = -1;
+    if (outIpSize) outIp[0] = '\0';
+    if (outUserSize) outUser[0] = '\0';
+
+    xmlDocPtr doc = xmlReadMemory(xmlText, (int)strlen(xmlText), "event.xml", NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
+    if (!doc) return;
+
+    xmlNodePtr root = xmlDocGetRootElement(doc);
+    if (!root) { xmlFreeDoc(doc); return; }
+
+    xmlNodePtr eventData = NULL;
+    for (xmlNodePtr child = root->children; child; child = child->next) {
+        if (child->type == XML_ELEMENT_NODE && xmlStrcmp(child->name, BAD_CAST "EventData") == 0) {
+            eventData = child;
+            break;
+        }
+    }
+
+    if (eventData) {
+        xmlChar fieldNames[256] = "";
+        for (xmlNodePtr data = eventData->children; data; data = data->next) {
+            if (data->type != XML_ELEMENT_NODE || xmlStrcmp(data->name, BAD_CAST "Data") != 0) continue;
+            xmlChar *name = xmlGetProp(data, BAD_CAST "Name");
+            if (!name) continue;
+            xmlChar *value = xmlNodeGetContent(data);
+            if (value) {
+                if (xmlStrcmp(name, BAD_CAST "LogonType") == 0) {
+                    *outLogonType = atoi((const char*)value);
+                } else if (xmlStrcmp(name, BAD_CAST "IpAddress") == 0) {
+                    strncpy(outIp, (const char*)value, outIpSize - 1);
+                    outIp[outIpSize - 1] = '\0';
+                } else if (xmlStrcmp(name, BAD_CAST "TargetUserName") == 0) {
+                    strncpy(outUser, (const char*)value, outUserSize - 1);
+                    outUser[outUserSize - 1] = '\0';
+                }
+                xmlFree(value);
+            }
+            if (fieldNames[0] != '\0') strncat((char*)fieldNames, ",", sizeof(fieldNames)-strlen((char*)fieldNames)-1);
+            strncat((char*)fieldNames, (char*)name, sizeof(fieldNames)-strlen((char*)fieldNames)-1);
+            xmlFree(name);
+        }
+        if (*outLogonType == -1) {
+            printf("[WARN] LogonType missing; got Data Name fields: %s\n", (char*)fieldNames);
+        }
+    }
+
+    xmlFreeDoc(doc);
 }
 
 void LogFailure(const char* ip, int logonType) {
@@ -172,15 +224,16 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
         printf("[WARN] EventID missing from XML, raw event follows for analysis:\n%s\n", xml);
     }
 
-    char logonTypeStr[10] = {0};
-    if (!ExtractXmlDataValue(xml, "LogonType", logonTypeStr, sizeof(logonTypeStr))) {
-        printf("[WARN] LogonType missing from XML, raw event follows:\n%s\n", xml);
+    int logonType;
+    char ip[46] = {0};
+    char targetUser[128] = {0};
+
+    ParseEventDataFields(xml, &logonType, ip, sizeof(ip), targetUser, sizeof(targetUser));
+
+    if (logonType == -1) {
         free(xml);
         return 0;
     }
-
-    char ip[46] = {0};
-    ExtractXmlDataValue(xml, "IpAddress", ip, sizeof(ip));
 
     if (strlen(ip) == 0 || strcmp(ip, "-") == 0) {
         printf("[WARN] IpAddress invalid/missing ('%s') in event, raw XML:\n%s\n", ip, xml);
@@ -188,8 +241,7 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
         return 0;
     }
 
-    int logonType = atoi(logonTypeStr);
-    printf("[DEBUG] Parsed LogonType: %d, IP: '%s'\n", logonType, ip);
+    printf("[DEBUG] Parsed LogonType: %d, IP: '%s', TargetUserName: '%s'\n", logonType, ip, targetUser);
     if (logonType != 3 && logonType != 10) {
         printf("[DEBUG] LogonType %d not 3 or 10, ignoring (IP=%s)\n", logonType, ip);
         free(xml);
