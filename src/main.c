@@ -24,6 +24,7 @@ typedef struct {
     time_t timestamps[MAX_FAILS];
     int numTimestamps;
     int isBlocked;
+    int blockedSkipCount;
 } IPTracker;
 
 IPTracker trackers[MAX_IP];
@@ -59,7 +60,7 @@ static int ExtractXmlDataValue(const char *xml, const char *name, char *out, int
     if (!xml || !name || !out || outSize <= 0) return 0;
     const char *dataTag = strstr(xml, "<Data Name=");
     if (!dataTag) return 0;
-    const char *quote = dataTag + 11; // after <Data Name=
+    const char *quote = dataTag + 11;
     char quoteChar = *quote;
     if (quoteChar != '"' && quoteChar != '\'') return 0;
     const char *nameStart = quote + 1;
@@ -102,7 +103,6 @@ char* extract_value(const char* xml, const char* key) {
 }
 
 int is_whitelisted(const char* ip) {
-    // Whitelist check: prevent blocking of trusted IPs
     for (int i = 0; whitelist[i] != NULL; i++) {
         if (strcmp(ip, whitelist[i]) == 0) {
             return 1;
@@ -112,13 +112,12 @@ int is_whitelisted(const char* ip) {
 }
 
 void log_to_file(const char* message) {
-    // File logging: append all fails and blocks to log file
     FILE* f = fopen(LOG_FILE, "a");
     if (f) {
         time_t now = time(NULL);
         char time_str[26];
         ctime_s(time_str, sizeof(time_str), &now);
-        time_str[strlen(time_str) - 1] = '\0'; // Remove newline
+        time_str[strlen(time_str) - 1] = '\0';
         fprintf(f, "[%s] %s\n", time_str, message);
         fclose(f);
     }
@@ -164,6 +163,7 @@ void LogFailure(const char* ip, int logonType) {
             strcpy(trackers[numTrackers].ip, ip);
             trackers[numTrackers].numTimestamps = 0;
             trackers[numTrackers].isBlocked = 0;
+            trackers[numTrackers].blockedSkipCount = 0;
             found = numTrackers++;
         } else {
             printf("[WARN] MAX_IP reached, ignoring new IP %s\n", ip);
@@ -174,7 +174,12 @@ void LogFailure(const char* ip, int logonType) {
     IPTracker *t = &trackers[found];
 
     if (t->isBlocked) {
-        printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
+        t->blockedSkipCount += 1;
+        if (t->blockedSkipCount == 1) {
+            printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
+        } else if (t->blockedSkipCount % 20 == 0) {
+            printf("[INFO] IP %s already blocked, ignored %d attempts so far\n", ip, t->blockedSkipCount);
+        }
         return;
     }
 
