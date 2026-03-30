@@ -11,6 +11,11 @@
 #define MAX_IP 100
 #define MAX_FAILS 100
 
+#define DEBUG_LOG(fmt, ...) \
+    do { if (DEBUG_MODE) printf("[DEBUG] " fmt, ##__VA_ARGS__); } while (0)
+
+int DEBUG_MODE = 0;
+
 typedef struct {
     char ip[46];
     time_t timestamps[MAX_FAILS];
@@ -123,7 +128,7 @@ void LogFailure(const char* ip, int logonType) {
     t->numTimestamps = j;
 
     if (oldCount != t->numTimestamps) {
-        printf("[DEBUG] %s old timestamps removed for %s. kept=%d\n", ip, ip, t->numTimestamps);
+        DEBUG_LOG("%s old timestamps removed for %s. kept=%d\n", ip, ip, t->numTimestamps);
     }
 
     double delta = 0;
@@ -185,11 +190,11 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
     wcstombs(xml, xmlBuffer, narrowSize);
     free(xmlBuffer);
 
-    printf("[DEBUG] Received event XML:\n%s\n", xml);
+    DEBUG_LOG("Received event XML:\n%s\n", xml);
 
     char eventId[16] = {0};
     if (ExtractXmlElementValue(xml, "EventID", eventId, sizeof(eventId)) > 0) {
-        printf("[DEBUG] EventID parsed: %s\n", eventId);
+        DEBUG_LOG("EventID parsed: %s\n", eventId);
     } else {
         printf("[WARN] EventID missing from XML, raw event follows for analysis:\n%s\n", xml);
     }
@@ -233,9 +238,9 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
         return 0;
     }
 
-    printf("[DEBUG] Parsed LogonType: %d, IP: '%s', TargetUserName: '%s'\n", logonType, ip, targetUser);
+    DEBUG_LOG("Parsed LogonType: %d, IP: '%s', TargetUserName: '%s'\n", logonType, ip, targetUser);
     if (logonType != 3 && logonType != 10) {
-        printf("[DEBUG] LogonType %d not 3 or 10, ignoring (IP=%s)\n", logonType, ip);
+        DEBUG_LOG("LogonType %d not 3 or 10, ignoring (IP=%s)\n", logonType, ip);
         free(xml);
         return 0;
     }
@@ -249,9 +254,13 @@ int main(int argc, char *argv[]) {
     EVT_HANDLE hSubscription = NULL;
     DWORD flags = EvtSubscribeToFutureEvents;
 
-    if (argc > 1 && strcmp(argv[1], "--start-oldest") == 0) {
-        flags = EvtSubscribeStartAtOldestRecord;
-        printf("[INFO] Running with EvtSubscribeStartAtOldestRecord (debug mode)\n");
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--debug") == 0) {
+            DEBUG_MODE = 1;
+        } else if (strcmp(argv[i], "--start-oldest") == 0) {
+            flags = EvtSubscribeStartAtOldestRecord;
+            printf("[INFO] Running with EvtSubscribeStartAtOldestRecord (debug mode)\n");
+        }
     }
 
     printf("========================================\n");
