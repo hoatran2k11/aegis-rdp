@@ -28,6 +28,9 @@ typedef struct {
 IPTracker trackers[MAX_IP];
 int numTrackers = 0;
 
+char blockedIPs[MAX_IP][46];
+int numBlocked = 0;
+
 static int ExtractXmlElementValue(const char *xml, const char *tag, char *out, int outSize) {
     if (!xml || !tag || !out || outSize <= 0) return 0;
     char openTag[128];
@@ -121,6 +124,17 @@ void log_to_file(const char* message) {
 }
 
 void block_ip(const char* ip) {
+    for (int i = 0; i < numBlocked; i++) {
+        if (strcmp(blockedIPs[i], ip) == 0) {
+            printf("[INFO] IP %s already blocked, skipping\n", ip);
+            return;
+        }
+    }
+
+    if (numBlocked < MAX_IP) {
+        strcpy(blockedIPs[numBlocked++], ip);
+    }
+
     char cmd[512];
     snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall add rule name=\"AegisRDP_Block_%s\" dir=in action=block remoteip=%s", ip, ip);
     if (system(cmd) == 0) {
