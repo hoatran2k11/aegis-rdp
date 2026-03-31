@@ -3,11 +3,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
 
 #pragma comment(lib, "wevtapi.lib")
 
 #define THRESHOLD 5
 #define TIME_WINDOW 60
+#define LONG_THRESHOLD 10
+#define LONG_WINDOW 300
+#define BLOCK_DURATION 600
 #define MAX_IP 100
 #define MAX_FAILS 100
 
@@ -15,6 +19,11 @@
     do { if (DEBUG_MODE) printf("[DEBUG] " fmt, ##__VA_ARGS__); } while (0)
 
 int DEBUG_MODE = 0;
+int DRY_RUN = 0;
+int threshold = THRESHOLD;
+int time_window = TIME_WINDOW;
+int long_threshold = LONG_THRESHOLD;
+int long_window = LONG_WINDOW;
 
 const char* LOG_FILE = "aegis-rdp.log";
 char* whitelist[] = {"127.0.0.1", "192.168.1.1", NULL};
@@ -25,6 +34,7 @@ typedef struct {
     int numTimestamps;
     int isBlocked;
     int blockedSkipCount;
+    time_t blockedAt;
 } IPTracker;
 
 IPTracker trackers[MAX_IP];
@@ -58,49 +68,34 @@ static int ExtractXmlElementValue(const char *xml, const char *tag, char *out, i
 
 static int ExtractXmlDataValue(const char *xml, const char *name, char *out, int outSize) {
     if (!xml || !name || !out || outSize <= 0) return 0;
-    const char *dataTag = strstr(xml, "<Data Name=");
-    if (!dataTag) return 0;
-    const char *quote = dataTag + 11;
-    char quoteChar = *quote;
-    if (quoteChar != '"' && quoteChar != '\'') return 0;
-    const char *nameStart = quote + 1;
-    const char *nameEnd = strchr(nameStart, quoteChar);
-    if (!nameEnd) return 0;
-    int nameLen = (int)(nameEnd - nameStart);
-    if (nameLen != (int)strlen(name) || strncmp(nameStart, name, nameLen) != 0) return 0;
-    const char *valueStart = nameEnd + 1;
-    if (*valueStart != '>') return 0;
-    valueStart++;
-    const char *valueEnd = strstr(valueStart, "</Data>");
-    if (!valueEnd) return 0;
-    int len = (int)(valueEnd - valueStart);
-    if (len >= outSize) len = outSize - 1;
-    memcpy(out, valueStart, len);
-    out[len] = '\0';
-    return len;
+    const char *pos = xml;
+    size_t name_len = strlen(name);
+    while ((pos = strstr(pos, "<Data Name=")) != NULL) {
+        const char *quote = pos + 11; /* after <Data Name= */
+        char quoteChar = *quote;
+        if (quoteChar != '"' && quoteChar != '\'') { pos += 10; continue; }
+        const char *nameStart = quote + 1;
+        const char *nameEnd = strchr(nameStart, quoteChar);
+        if (!nameEnd) break;
+        int nameLen = (int)(nameEnd - nameStart);
+        if (nameLen == (int)name_len && strncmp(nameStart, name, nameLen) == 0) {
+            const char *valueStart = nameEnd + 1;
+            if (*valueStart != '>') return 0;
+            valueStart++;
+            const char *valueEnd = strstr(valueStart, "</Data>");
+            if (!valueEnd) return 0;
+            int len = (int)(valueEnd - valueStart);
+            if (len >= outSize) len = outSize - 1;
+            memcpy(out, valueStart, len);
+            out[len] = '\0';
+            return len;
+        }
+        pos = nameEnd + 1;
+    }
+    return 0;
 }
 
-char* extract_value(const char* xml, const char* key) {
-    char pattern[128];
-    snprintf(pattern, sizeof(pattern), "Name=\"%s\"", key);
-    const char* pos = strstr(xml, pattern);
-    if (!pos) {
-        snprintf(pattern, sizeof(pattern), "Name='%s'", key);
-        pos = strstr(xml, pattern);
-        if (!pos) return NULL;
-    }
-    pos = strchr(pos, '>');
-    if (!pos) return NULL;
-    pos++;
-    const char* end = strstr(pos, "</Data>");
-    if (!end) return NULL;
-    size_t len = end - pos;
-    char* value = malloc(len + 1);
-    if (!value) return NULL;
-    memcpy(value, pos, len);
-    value[len] = '\0';
-    return value;
-}
+/* removed unsafe extract_value (used malloc). Use ExtractXmlDataValue() which writes into caller buffers. */
 
 int is_whitelisted(const char* ip) {
     for (int i = 0; whitelist[i] != NULL; i++) {
@@ -115,32 +110,53 @@ void log_to_file(const char* message) {
     FILE* f = fopen(LOG_FILE, "a");
     if (f) {
         time_t now = time(NULL);
-        char time_str[26];
-        ctime_s(time_str, sizeof(time_str), &now);
-        time_str[strlen(time_str) - 1] = '\0';
+        struct tm tmv;
+        localtime_s(&tmv, &now);
+        char time_str[64];
+        strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &tmv);
         fprintf(f, "[%s] %s\n", time_str, message);
+        fflush(f);
         fclose(f);
     }
 }
 
-void block_ip(const char* ip) {
-    for (int i = 0; i < numBlocked; i++) {
-        if (strcmp(blockedIPs[i], ip) == 0) {
-            printf("[INFO] IP %s already blocked, skipping\n", ip);
-            return;
-        }
-    }
-
-    if (numBlocked < MAX_IP) {
-        strcpy(blockedIPs[numBlocked++], ip);
-    }
-
+static int firewall_rule_exists(const char* ip) {
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall add rule name=\"AegisRDP_Block_%s\" dir=in action=block remoteip=%s", ip, ip);
-    if (system(cmd) == 0) {
+    snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall show rule name=\"AegisRDP_Block_%s\" >nul 2>&1", ip);
+    int rc = system(cmd);
+    return rc == 0;
+}
+
+static int firewall_add_block(const char* ip) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall add rule name=\"AegisRDP_Block_%s\" dir=in action=block remoteip=%s >nul 2>&1", ip, ip);
+    return system(cmd) == 0;
+}
+
+void block_ip(const char* ip) {
+    if (firewall_rule_exists(ip)) {
+        for (int i = 0; i < numBlocked; i++) {
+            if (strcmp(blockedIPs[i], ip) == 0) return;
+        }
+        if (numBlocked < MAX_IP) { strcpy_s(blockedIPs[numBlocked], sizeof(blockedIPs[0]), ip); numBlocked++; }
+        printf("[INFO] Firewall rule already exists for %s\n", ip);
+        return;
+    }
+
+    if (DRY_RUN) {
+        printf("[DRY-RUN] Would block IP: %s\n", ip);
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "EVENT=DRY_BLOCK IP=%s", ip);
+        log_to_file(log_msg);
+        if (numBlocked < MAX_IP) { strcpy_s(blockedIPs[numBlocked], sizeof(blockedIPs[0]), ip); numBlocked++; }
+        return;
+    }
+
+    if (firewall_add_block(ip)) {
+        if (numBlocked < MAX_IP) { strcpy_s(blockedIPs[numBlocked], sizeof(blockedIPs[0]), ip); numBlocked++; }
         printf("[+] BLOCK APPLIED: %s\n", ip);
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "BLOCKED IP: %s", ip);
+        snprintf(log_msg, sizeof(log_msg), "EVENT=BLOCK IP=%s REASON=UNKNOWN", ip);
         log_to_file(log_msg);
     } else {
         printf("[-] Failed to block IP: %s\n", ip);
@@ -160,10 +176,11 @@ void LogFailure(const char* ip, int logonType) {
 
     if (found == -1) {
         if (numTrackers < MAX_IP) {
-            strcpy(trackers[numTrackers].ip, ip);
+            strncpy_s(trackers[numTrackers].ip, sizeof(trackers[numTrackers].ip), ip, _TRUNCATE);
             trackers[numTrackers].numTimestamps = 0;
             trackers[numTrackers].isBlocked = 0;
             trackers[numTrackers].blockedSkipCount = 0;
+            trackers[numTrackers].blockedAt = 0;
             found = numTrackers++;
         } else {
             printf("[WARN] MAX_IP reached, ignoring new IP %s\n", ip);
@@ -174,32 +191,33 @@ void LogFailure(const char* ip, int logonType) {
     IPTracker *t = &trackers[found];
 
     if (t->isBlocked) {
-        t->blockedSkipCount += 1;
-        if (t->blockedSkipCount == 1) {
-            printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
-        } else if (t->blockedSkipCount % 20 == 0) {
-            printf("[INFO] IP %s already blocked, ignored %d attempts so far\n", ip, t->blockedSkipCount);
+        if (t->blockedAt != 0 && difftime(now, t->blockedAt) >= BLOCK_DURATION) {
+            // cooldown expired: allow re-detection
+            t->isBlocked = 0;
+            t->blockedSkipCount = 0;
+            t->blockedAt = 0;
+            t->numTimestamps = 0;
+            DEBUG_LOG("Unblocked %s after cooldown\n", ip);
+        } else {
+            if (is_whitelisted(ip)) return;
+            t->blockedSkipCount++;
+            if (t->blockedSkipCount == 1) {
+                printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
+            } else if (t->blockedSkipCount % 10 == 0) {
+                printf("[INFO] IP %s already blocked, ignored %d attempts so far\n", ip, t->blockedSkipCount);
+            }
+            return;
         }
-        return;
     }
 
-    int oldCount = t->numTimestamps;
+    // prune timestamps older than long_window (we keep history for slow detection)
     int j = 0;
     for (int i = 0; i < t->numTimestamps; i++) {
-        if (difftime(now, t->timestamps[i]) <= TIME_WINDOW) {
+        if (difftime(now, t->timestamps[i]) <= long_window) {
             t->timestamps[j++] = t->timestamps[i];
         }
     }
     t->numTimestamps = j;
-
-    if (oldCount != t->numTimestamps) {
-        DEBUG_LOG("%s old timestamps removed for %s. kept=%d\n", ip, ip, t->numTimestamps);
-    }
-
-    double delta = 0;
-    if (t->numTimestamps > 0) {
-        delta = difftime(now, t->timestamps[t->numTimestamps - 1]);
-    }
 
     if (t->numTimestamps < MAX_FAILS) {
         t->timestamps[t->numTimestamps++] = now;
@@ -208,23 +226,43 @@ void LogFailure(const char* ip, int logonType) {
         t->timestamps[MAX_FAILS - 1] = now;
     }
 
-    int currentCount = t->numTimestamps;
-    printf("[FAIL] IP: %s | Count: %d | LogonType: %d | Delta: %.0f sec\n", ip, currentCount, logonType, delta);
+    // compute fast and slow counts
+    int fastCount = 0;
+    int slowCount = 0;
+    for (int i = 0; i < t->numTimestamps; i++) {
+        double d = difftime(now, t->timestamps[i]);
+        if (d <= time_window) fastCount++;
+        if (d <= long_window) slowCount++;
+    }
 
+    printf("[FAIL] IP=%s COUNT=%d TYPE=%d\n", ip, fastCount, logonType);
     char fail_msg[256];
-    snprintf(fail_msg, sizeof(fail_msg), "FAIL IP: %s | Count: %d | LogonType: %d", ip, currentCount, logonType);
+    snprintf(fail_msg, sizeof(fail_msg), "EVENT=FAIL IP=%s COUNT=%d TYPE=%d", ip, fastCount, logonType);
     log_to_file(fail_msg);
 
-    if (currentCount >= THRESHOLD) {
+    int triggered = 0;
+    const char *reason = NULL;
+    if (fastCount >= threshold) { triggered = 1; reason = "FAST_BRUTE"; }
+    else if (slowCount >= long_threshold) { triggered = 1; reason = "SLOW_BRUTE"; }
+
+    if (triggered) {
         printf(">>> BRUTE DETECTED: %s <<<\n", ip);
-        t->isBlocked = 1;
         if (!is_whitelisted(ip)) {
+            t->isBlocked = 1;
+            t->blockedAt = now;
+            t->blockedSkipCount = 0;
             block_ip(ip);
+            char log_msg[256];
+            snprintf(log_msg, sizeof(log_msg), "EVENT=BLOCK IP=%s REASON=%s", ip, reason);
+            log_to_file(log_msg);
         } else {
             printf("[INFO] IP %s is whitelisted, not blocking\n", ip);
+            char log_msg[256];
+            snprintf(log_msg, sizeof(log_msg), "EVENT=BLOCK_SKIPPED IP=%s REASON=%s", ip, reason);
+            log_to_file(log_msg);
         }
     } else {
-        printf("[INFO] Below threshold (%d/%d) for %s\n", currentCount, THRESHOLD, ip);
+        printf("[INFO] Below threshold (%d/%d) for %s\n", fastCount, threshold, ip);
     }
 }
 
@@ -278,28 +316,25 @@ DWORD WINAPI SubscriptionCallback(EVT_SUBSCRIBE_NOTIFY_ACTION action, PVOID pCon
     char ip[46] = {0};
     char targetUser[128] = {0};
 
-    char* logonTypeStr = extract_value(xml, "LogonType");
-    if (!logonTypeStr) {
+    char logonTypeBuf[16] = {0};
+    if (ExtractXmlDataValue(xml, "LogonType", logonTypeBuf, sizeof(logonTypeBuf)) <= 0) {
         printf("[WARN] LogonType missing\n");
         free(xml);
         return 0;
     }
-    logonType = atoi(logonTypeStr);
-    free(logonTypeStr);
+    logonType = atoi(logonTypeBuf);
 
-    char* ipStr = extract_value(xml, "IpAddress");
-    if (!ipStr) {
+    char ipBuf[46] = {0};
+    if (ExtractXmlDataValue(xml, "IpAddress", ipBuf, sizeof(ipBuf)) <= 0) {
         printf("[WARN] IpAddress missing\n");
         free(xml);
         return 0;
     }
-    strncpy(ip, ipStr, sizeof(ip) - 1);
-    free(ipStr);
+    strncpy_s(ip, sizeof(ip), ipBuf, _TRUNCATE);
 
-    char* userStr = extract_value(xml, "TargetUserName");
-    if (userStr) {
-        strncpy(targetUser, userStr, sizeof(targetUser) - 1);
-        free(userStr);
+    char userBuf[128] = {0};
+    if (ExtractXmlDataValue(xml, "TargetUserName", userBuf, sizeof(userBuf)) > 0) {
+        strncpy_s(targetUser, sizeof(targetUser), userBuf, _TRUNCATE);
     }
 
     if (logonType == -1) {
@@ -334,14 +369,21 @@ int main(int argc, char *argv[]) {
             DEBUG_MODE = 1;
         } else if (strcmp(argv[i], "--start-oldest") == 0) {
             flags = EvtSubscribeStartAtOldestRecord;
-            printf("[INFO] Running with EvtSubscribeStartAtOldestRecord (debug mode)\n");
+            printf("[INFO] Running with EvtSubscribeStartAtOldestRecord\n");
+        } else if (strcmp(argv[i], "--threshold") == 0 && i + 1 < argc) {
+            threshold = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--window") == 0 && i + 1 < argc) {
+            time_window = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--dry-run") == 0) {
+            DRY_RUN = 1;
         }
     }
 
     printf("========================================\n");
-    printf("   AegisRDP v0.2.0-alpha\n");
+    printf("   AegisRDP v0.3.0-alpha\n");
     printf("   Author: Hoa Tran | 2026\n");
     printf("========================================\n");
+    printf("[INFO] threshold=%d window=%d long_threshold=%d long_window=%d dry-run=%s\n", threshold, time_window, long_threshold, long_window, DRY_RUN?"yes":"no");
 
     hSubscription = EvtSubscribe(NULL, NULL, L"Security", L"Event[System[(EventID=4625)]]", 
                                  NULL, NULL, (EVT_SUBSCRIBE_CALLBACK)SubscriptionCallback, 
