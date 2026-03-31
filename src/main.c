@@ -24,6 +24,10 @@ int threshold = THRESHOLD;
 int time_window = TIME_WINDOW;
 int long_threshold = LONG_THRESHOLD;
 int long_window = LONG_WINDOW;
+int total_failures = 0;
+int total_blocked = 0;
+int unique_ips = 0;
+#define STATS_INTERVAL 30
 
 const char* LOG_FILE = "aegis-rdp.log";
 char* whitelist[] = {"127.0.0.1", "192.168.1.1", NULL};
@@ -71,7 +75,7 @@ static int ExtractXmlDataValue(const char *xml, const char *name, char *out, int
     const char *pos = xml;
     size_t name_len = strlen(name);
     while ((pos = strstr(pos, "<Data Name=")) != NULL) {
-        const char *quote = pos + 11; /* after <Data Name= */
+        const char *quote = pos + 11;
         char quoteChar = *quote;
         if (quoteChar != '"' && quoteChar != '\'') { pos += 10; continue; }
         const char *nameStart = quote + 1;
@@ -94,8 +98,6 @@ static int ExtractXmlDataValue(const char *xml, const char *name, char *out, int
     }
     return 0;
 }
-
-/* removed unsafe extract_value (used malloc). Use ExtractXmlDataValue() which writes into caller buffers. */
 
 int is_whitelisted(const char* ip) {
     for (int i = 0; whitelist[i] != NULL; i++) {
@@ -133,7 +135,7 @@ static int firewall_add_block(const char* ip) {
     return system(cmd) == 0;
 }
 
-void block_ip(const char* ip) {
+void block_ip(const char* ip, const char* type) {
     if (firewall_rule_exists(ip)) {
         for (int i = 0; i < numBlocked; i++) {
             if (strcmp(blockedIPs[i], ip) == 0) return;
@@ -146,9 +148,10 @@ void block_ip(const char* ip) {
     if (DRY_RUN) {
         printf("[DRY-RUN] Would block IP: %s\n", ip);
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "EVENT=DRY_BLOCK IP=%s", ip);
+        snprintf(log_msg, sizeof(log_msg), "BLOCK IP=%s METHOD=firewall TYPE=%s (dry-run)", ip, type?type:"unknown");
         log_to_file(log_msg);
         if (numBlocked < MAX_IP) { strcpy_s(blockedIPs[numBlocked], sizeof(blockedIPs[0]), ip); numBlocked++; }
+        total_blocked++;
         return;
     }
 
@@ -156,8 +159,9 @@ void block_ip(const char* ip) {
         if (numBlocked < MAX_IP) { strcpy_s(blockedIPs[numBlocked], sizeof(blockedIPs[0]), ip); numBlocked++; }
         printf("[+] BLOCK APPLIED: %s\n", ip);
         char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg), "EVENT=BLOCK IP=%s REASON=UNKNOWN", ip);
+        snprintf(log_msg, sizeof(log_msg), "BLOCK IP=%s METHOD=firewall TYPE=%s", ip, type?type:"unknown");
         log_to_file(log_msg);
+        total_blocked++;
     } else {
         printf("[-] Failed to block IP: %s\n", ip);
     }
@@ -182,6 +186,7 @@ void LogFailure(const char* ip, int logonType) {
             trackers[numTrackers].blockedSkipCount = 0;
             trackers[numTrackers].blockedAt = 0;
             found = numTrackers++;
+            unique_ips++;
         } else {
             printf("[WARN] MAX_IP reached, ignoring new IP %s\n", ip);
             return;
@@ -192,7 +197,6 @@ void LogFailure(const char* ip, int logonType) {
 
     if (t->isBlocked) {
         if (t->blockedAt != 0 && difftime(now, t->blockedAt) >= BLOCK_DURATION) {
-            // cooldown expired: allow re-detection
             t->isBlocked = 0;
             t->blockedSkipCount = 0;
             t->blockedAt = 0;
@@ -210,7 +214,6 @@ void LogFailure(const char* ip, int logonType) {
         }
     }
 
-    // prune timestamps older than long_window (we keep history for slow detection)
     int j = 0;
     for (int i = 0; i < t->numTimestamps; i++) {
         if (difftime(now, t->timestamps[i]) <= long_window) {
@@ -226,7 +229,6 @@ void LogFailure(const char* ip, int logonType) {
         t->timestamps[MAX_FAILS - 1] = now;
     }
 
-    // compute fast and slow counts
     int fastCount = 0;
     int slowCount = 0;
     for (int i = 0; i < t->numTimestamps; i++) {
@@ -237,8 +239,12 @@ void LogFailure(const char* ip, int logonType) {
 
     printf("[FAIL] IP=%s COUNT=%d TYPE=%d\n", ip, fastCount, logonType);
     char fail_msg[256];
-    snprintf(fail_msg, sizeof(fail_msg), "EVENT=FAIL IP=%s COUNT=%d TYPE=%d", ip, fastCount, logonType);
+    snprintf(fail_msg, sizeof(fail_msg), "FAIL IP=%s COUNT=%d TYPE=%d", ip, fastCount, logonType);
     log_to_file(fail_msg);
+    total_failures++;
+    if (total_failures % STATS_INTERVAL == 0) {
+        printf("[STATS] total_fail=%d blocked=%d unique_ip=%d\n", total_failures, total_blocked, unique_ips);
+    }
 
     int triggered = 0;
     const char *reason = NULL;
@@ -246,19 +252,24 @@ void LogFailure(const char* ip, int logonType) {
     else if (slowCount >= long_threshold) { triggered = 1; reason = "SLOW_BRUTE"; }
 
     if (triggered) {
-        printf(">>> BRUTE DETECTED: %s <<<\n", ip);
+        if (reason && strcmp(reason, "FAST_BRUTE") == 0) {
+            printf(">>> FAST BRUTE DETECTED: %s <<<\n", ip);
+        } else if (reason && strcmp(reason, "SLOW_BRUTE") == 0) {
+            printf(">>> SLOW BRUTE DETECTED: %s <<<\n", ip);
+        } else {
+            printf(">>> BRUTE DETECTED: %s <<<\n", ip);
+        }
+
         if (!is_whitelisted(ip)) {
             t->isBlocked = 1;
             t->blockedAt = now;
             t->blockedSkipCount = 0;
-            block_ip(ip);
-            char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg), "EVENT=BLOCK IP=%s REASON=%s", ip, reason);
-            log_to_file(log_msg);
+            const char *type = (reason && strstr(reason, "FAST")) ? "fast" : "slow";
+            block_ip(ip, type);
         } else {
             printf("[INFO] IP %s is whitelisted, not blocking\n", ip);
             char log_msg[256];
-            snprintf(log_msg, sizeof(log_msg), "EVENT=BLOCK_SKIPPED IP=%s REASON=%s", ip, reason);
+            snprintf(log_msg, sizeof(log_msg), "BLOCK_SKIPPED IP=%s REASON=%s", ip, reason);
             log_to_file(log_msg);
         }
     } else {
