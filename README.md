@@ -18,10 +18,10 @@ Implemented:
 - [x] Read Windows Security Event Logs (Event ID 4625)
 - [x] Extract source IP address
 - [x] Detect brute-force attempts (basic threshold logic)
+- [x] Automatic IP blocking via Windows Firewall
+- [x] Whitelist system
 
 Planned:
-- [ ] Automatic IP blocking via Windows Firewall
-- [ ] Whitelist system
 - [ ] Run as Windows Service
 - [ ] Configuration file support
 - [ ] Secure agent ↔ server communication (TLS + HMAC)
