@@ -71,9 +71,9 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
             if (is_whitelisted(ip, cfg)) return;
             t->blockedSkipCount++;
             if (t->blockedSkipCount == 1) {
-                printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
+                DEBUG_LOG(cfg, "[INFO] IP %s already blocked, ignoring further attempts\n", ip);
             } else if (t->blockedSkipCount % 10 == 0) {
-                printf("[INFO] IP %s already blocked, ignored %d attempts so far\n", ip, t->blockedSkipCount);
+                DEBUG_LOG(cfg, "[INFO] IP %s already blocked, ignored %d attempts so far\n", ip, t->blockedSkipCount);
             }
             return;
         }
