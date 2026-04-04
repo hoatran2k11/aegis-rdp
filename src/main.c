@@ -7,10 +7,9 @@
 #pragma comment(lib, "wevtapi.lib")
 
 #include "include/config.h"
+#include "include/config_loader.h"
 #include "include/event.h"
 #include "include/detector.h"
-
-char* whitelist[] = {"127.0.0.1", "192.168.1.1", NULL};
 
 int main(int argc, char *argv[]) {
     EVT_HANDLE hSubscription = NULL;
@@ -25,8 +24,11 @@ int main(int argc, char *argv[]) {
         .dry_run = 0,
         .debug_mode = 0,
         .stats_interval = STATS_INTERVAL,
-        .log_file = LOG_FILE
+        .log_file = LOG_FILE,
+        .whitelist_count = 0
     };
+
+    load_config_from_ini(&cfg, "config.ini");
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--debug") == 0) {

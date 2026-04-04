@@ -20,11 +20,10 @@ static int total_failures = 0;
 static int total_blocked = 0;
 static int unique_ips = 0;
 
-extern char* whitelist[];
-
-static int is_whitelisted(const char* ip) {
-    for (int i = 0; whitelist[i] != NULL; i++) {
-        if (strcmp(ip, whitelist[i]) == 0) {
+static int is_whitelisted(const char* ip, const Config* cfg) {
+    if (!cfg) return 0;
+    for (int i = 0; i < cfg->whitelist_count; i++) {
+        if (cfg->whitelist[i] && strcmp(ip, cfg->whitelist[i]) == 0) {
             return 1;
         }
     }
@@ -69,7 +68,7 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
             t->numTimestamps = 0;
             DEBUG_LOG(cfg, "Unblocked %s after cooldown\n", ip);
         } else {
-            if (is_whitelisted(ip)) return;
+            if (is_whitelisted(ip, cfg)) return;
             t->blockedSkipCount++;
             if (t->blockedSkipCount == 1) {
                 printf("[INFO] IP %s already blocked, ignoring further attempts\n", ip);
@@ -126,7 +125,7 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
             printf(">>> BRUTE DETECTED: %s <<<\n", ip);
         }
 
-        if (!is_whitelisted(ip)) {
+        if (!is_whitelisted(ip, cfg)) {
             t->isBlocked = 1;
             t->blockedAt = now;
             t->blockedSkipCount = 0;

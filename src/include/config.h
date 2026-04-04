@@ -11,6 +11,7 @@
 #define STATS_INTERVAL 30
 
 #define LOG_FILE "aegis-rdp.log"
+#define DEFAULT_WHITELIST "127.0.0.1,192.168.1.1"
 
 #define DEBUG_LOG(cfg, fmt, ...) \
     do { if ((cfg) && (cfg)->debug_mode) printf("[DEBUG] " fmt, ##__VA_ARGS__); } while (0)
@@ -25,8 +26,8 @@ typedef struct {
     int debug_mode;
     int stats_interval;
     const char* log_file;
+    char* whitelist[MAX_IP + 1];
+    int whitelist_count;
 } Config;
-
-extern char* whitelist[];
 
 #endif /* CONFIG_H */
