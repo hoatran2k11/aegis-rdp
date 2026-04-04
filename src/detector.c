@@ -67,7 +67,7 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
             t->blockedSkipCount = 0;
             t->blockedAt = 0;
             t->numTimestamps = 0;
-            DEBUG_LOG("Unblocked %s after cooldown\n", cfg, ip);
+            DEBUG_LOG(cfg, "Unblocked %s after cooldown\n", ip);
         } else {
             if (is_whitelisted(ip)) return;
             t->blockedSkipCount++;
