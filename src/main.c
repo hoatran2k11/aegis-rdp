@@ -28,6 +28,7 @@ int main(int argc, char *argv[]) {
         .whitelist_count = 0
     };
 
+    ensure_config_exists("config.ini");
     load_config_from_ini(&cfg, "config.ini");
 
     for (int i = 1; i < argc; i++) {

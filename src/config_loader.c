@@ -87,6 +87,42 @@ static void apply_default_whitelist(Config* cfg) {
     parse_whitelist_value(cfg, DEFAULT_WHITELIST);
 }
 
+void ensure_config_exists(const char* filename) {
+    if (!filename) return;
+
+    FILE* file = fopen(filename, "r");
+    if (file) {
+        fclose(file);
+        return;
+    }
+
+    file = fopen(filename, "w");
+    if (!file) {
+        printf("[WARNING] Failed to create default config file '%s'. Continuing with hardcoded defaults.\n", filename);
+        return;
+    }
+
+    fprintf(file, "[Detection]\n");
+    fprintf(file, "threshold=%d\n", THRESHOLD);
+    fprintf(file, "time_window=%d\n", TIME_WINDOW);
+    fprintf(file, "long_threshold=%d\n", LONG_THRESHOLD);
+    fprintf(file, "long_window=%d\n", LONG_WINDOW);
+    fprintf(file, "\n");
+    fprintf(file, "[Action]\n");
+    fprintf(file, "block_duration=%d\n", BLOCK_DURATION);
+    fprintf(file, "dry_run=0\n");
+    fprintf(file, "\n");
+    fprintf(file, "[Logging]\n");
+    fprintf(file, "log_file=%s\n", LOG_FILE);
+    fprintf(file, "debug_mode=0\n");
+    fprintf(file, "\n");
+    fprintf(file, "[Whitelist]\n");
+    fprintf(file, "ips=%s\n", DEFAULT_WHITELIST);
+
+    fclose(file);
+    printf("[INFO] Created default config file '%s'.\n", filename);
+}
+
 int load_config_from_ini(Config* cfg, const char* filename) {
     if (!cfg || !filename) return 0;
 
@@ -158,7 +194,9 @@ int load_config_from_ini(Config* cfg, const char* filename) {
                 reset_whitelist(cfg);
                 whitelist_section_seen = 1;
             }
-            parse_whitelist_value(cfg, value);
+            if (string_iequals(key, "ips")) {
+                parse_whitelist_value(cfg, value);
+            }
         }
     }
 
