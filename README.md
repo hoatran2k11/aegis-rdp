@@ -20,10 +20,10 @@ Implemented:
 - [x] Detect brute-force attempts (basic threshold logic)
 - [x] Automatic IP blocking via Windows Firewall
 - [x] Whitelist system
+- [x] Configuration file support
 
 Planned:
 - [ ] Run as Windows Service
-- [ ] Configuration file support
 - [ ] Secure agent ↔ server communication (TLS + HMAC)
 - [ ] Web-based control panel
 - [ ] RDP port management
