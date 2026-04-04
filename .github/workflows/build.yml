@@ -18,7 +18,7 @@ jobs:
 
     - name: Compile
       run: |
-        cl src\main.c /Fe:aegisrdp.exe wevtapi.lib
+        cl src\*.c /I src\include /Fe:aegisrdp.exe wevtapi.lib /O2
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
