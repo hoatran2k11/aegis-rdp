@@ -12,7 +12,7 @@ It monitors login attempts in real time, detects suspicious behavior, and (in up
 
 ⚠️ This project is currently under active development.
 
-Current version: `0.1.0-alpha`
+Current version: `0.3.0-alpha`
 
 Implemented:
 - [x] Read Windows Security Event Logs (Event ID 4625)
