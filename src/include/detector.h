@@ -11,4 +11,8 @@ int get_total_blocked(void);
 
 int get_unique_ips(void);
 
+void check_and_unblock_expired_ips(const Config* cfg);
+
+void garbage_collect_old_entries(const Config* cfg);
+
 #endif /* DETECTOR_H */

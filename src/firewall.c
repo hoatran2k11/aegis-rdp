@@ -20,6 +20,12 @@ static int firewall_add_block(const char* ip) {
     return system(cmd) == 0;
 }
 
+static int firewall_delete_rule(const char* ip) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "netsh advfirewall firewall delete rule name=\"AegisRDP_Block_%s\" >nul 2>&1", ip);
+    return system(cmd) == 0;
+}
+
 static int is_already_blocked(const char* ip) {
     for (int i = 0; i < numBlocked; i++) {
         if (strcmp(blockedIPs[i], ip) == 0) return 1;
@@ -31,6 +37,18 @@ static void add_to_blocked_list(const char* ip) {
     if (numBlocked < MAX_IP && !is_already_blocked(ip)) {
         strcpy_s(blockedIPs[numBlocked], sizeof(blockedIPs[0]), ip);
         numBlocked++;
+    }
+}
+
+static void remove_from_blocked_list(const char* ip) {
+    for (int i = 0; i < numBlocked; i++) {
+        if (strcmp(blockedIPs[i], ip) == 0) {
+            for (int j = i; j < numBlocked - 1; j++) {
+                strcpy_s(blockedIPs[j], sizeof(blockedIPs[0]), blockedIPs[j + 1]);
+            }
+            numBlocked--;
+            break;
+        }
     }
 }
 
@@ -60,6 +78,29 @@ void block_ip(const char* ip, const char* type, const Config* cfg) {
         log_to_file(log_msg, cfg);
     } else {
         printf("[-] Failed to block IP: %s\n", ip);
+    }
+}
+
+void unblock_ip(const char* ip, const Config* cfg) {
+    if (!ip || !cfg) return;
+
+    if (cfg->dry_run) {
+        printf("[DRY-RUN] Would unblock IP: %s\n", ip);
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "UNBLOCK IP=%s METHOD=firewall (dry-run)", ip);
+        log_to_file(log_msg, cfg);
+        remove_from_blocked_list(ip);
+        return;
+    }
+
+    if (firewall_delete_rule(ip)) {
+        remove_from_blocked_list(ip);
+        printf("[+] UNBLOCK APPLIED: %s\n", ip);
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg), "UNBLOCK IP=%s METHOD=firewall", ip);
+        log_to_file(log_msg, cfg);
+    } else {
+        printf("[-] Failed to unblock IP: %s\n", ip);
     }
 }
 

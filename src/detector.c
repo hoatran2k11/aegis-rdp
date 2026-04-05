@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 typedef struct {
     char ip[46];
@@ -12,6 +15,7 @@ typedef struct {
     int isBlocked;
     int blockedSkipCount;
     time_t blockedAt;
+    time_t lastSeen;
 } IPTracker;
 
 static IPTracker trackers[MAX_IP];
@@ -20,11 +24,39 @@ static int total_failures = 0;
 static int total_blocked = 0;
 static int unique_ips = 0;
 
+static unsigned long ip_to_ulong(const char* ip) {
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip, &addr) == 1) {
+        return ntohl(addr.s_addr);
+    }
+    return 0;
+}
+
+static int is_ip_in_cidr(const char* ip, const char* cidr) {
+    char network[46];
+    int prefix_len;
+    if (sscanf(cidr, "%[^/]/%d", network, &prefix_len) != 2) {
+        return 0;
+    }
+
+    unsigned long ip_addr = ip_to_ulong(ip);
+    unsigned long net_addr = ip_to_ulong(network);
+    if (ip_addr == 0 || net_addr == 0) return 0;
+
+    unsigned long mask = (prefix_len == 0) ? 0 : (~0UL << (32 - prefix_len));
+    return (ip_addr & mask) == (net_addr & mask);
+}
+
 static int is_whitelisted(const char* ip, const Config* cfg) {
     if (!cfg) return 0;
     for (int i = 0; i < cfg->whitelist_count; i++) {
-        if (cfg->whitelist[i] && strcmp(ip, cfg->whitelist[i]) == 0) {
-            return 1;
+        if (cfg->whitelist[i]) {
+            if (strcmp(ip, cfg->whitelist[i]) == 0) {
+                return 1;
+            }
+            if (is_ip_in_cidr(ip, cfg->whitelist[i])) {
+                return 1;
+            }
         }
     }
     return 0;
@@ -50,6 +82,7 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
             trackers[numTrackers].isBlocked = 0;
             trackers[numTrackers].blockedSkipCount = 0;
             trackers[numTrackers].blockedAt = 0;
+            trackers[numTrackers].lastSeen = now;
             found = numTrackers++;
             unique_ips++;
         } else {
@@ -59,6 +92,7 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
     }
 
     IPTracker *t = &trackers[found];
+    t->lastSeen = now;
 
     if (t->isBlocked) {
         if (t->blockedAt != 0 && difftime(now, t->blockedAt) >= cfg->block_duration) {
@@ -66,6 +100,7 @@ void LogFailure(const char* ip, int logonType, Config* cfg) {
             t->blockedSkipCount = 0;
             t->blockedAt = 0;
             t->numTimestamps = 0;
+            unblock_ip(ip, cfg);
             DEBUG_LOG(cfg, "Unblocked %s after cooldown\n", ip);
         } else {
             if (is_whitelisted(ip, cfg)) return;
@@ -153,4 +188,42 @@ int get_total_blocked(void) {
 
 int get_unique_ips(void) {
     return unique_ips;
+}
+
+// Check and unblock IPs whose block duration has expired
+void check_and_unblock_expired_ips(const Config* cfg) {
+    if (!cfg) return;
+    time_t now = time(NULL);
+    
+    for (int i = 0; i < numTrackers; i++) {
+        IPTracker *t = &trackers[i];
+        if (t->isBlocked && t->blockedAt != 0 && difftime(now, t->blockedAt) >= cfg->block_duration) {
+            t->isBlocked = 0;
+            t->blockedSkipCount = 0;
+            t->blockedAt = 0;
+            t->numTimestamps = 0;
+            unblock_ip(t->ip, cfg);
+            DEBUG_LOG(cfg, "Auto-unblocked %s after %d seconds\n", t->ip, cfg->block_duration);
+        }
+    }
+}
+
+void garbage_collect_old_entries(const Config* cfg) {
+    if (!cfg) return;
+    time_t now = time(NULL);
+    const time_t max_age = 24 * 60 * 60;
+    
+    for (int i = 0; i < numTrackers; ) {
+        IPTracker *t = &trackers[i];
+        if (!t->isBlocked && difftime(now, t->lastSeen) > max_age) {
+            for (int j = i; j < numTrackers - 1; j++) {
+                trackers[j] = trackers[j + 1];
+            }
+            numTrackers--;
+            unique_ips--;
+            DEBUG_LOG(cfg, "Garbage collected old entry for %s\n", t->ip);
+        } else {
+            i++;
+        }
+    }
 }
