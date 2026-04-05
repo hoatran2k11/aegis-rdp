@@ -1,6 +1,6 @@
 # 🛡️ AegisRDP: Lightweight RDP Brute-Force Defender
 
-[![Version](https://img.shields.io/badge/version-0.4.0--alpha-blue.svg)](https://github.com/hoatran2k11/aegis-rdp)
+[![Version](https://img.shields.io/badge/version-0.3.0--alpha-blue.svg)](https://github.com/hoatran2k11/aegis-rdp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/platform-Windows%20Server-lightgrey.svg)](https://microsoft.com/windowsserver)
 
