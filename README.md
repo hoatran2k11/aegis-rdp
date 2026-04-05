@@ -1,109 +1,108 @@
-# 🛡️ AegisRDP
+# 🛡️ AegisRDP: Lightweight RDP Brute-Force Defender
 
-> Guard your RDP before attackers do.
+[![Version](https://img.shields.io/badge/version-0.4.0--alpha-blue.svg)](https://github.com/hoatran2k11/aegis-rdp)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/platform-Windows%20Server-lightgrey.svg)](https://microsoft.com/windowsserver)
 
-AegisRDP is a lightweight security system designed to protect Windows servers from RDP brute-force attacks.
+**AegisRDP** is a high-performance, lightweight security tool written in **C**. It is designed to protect Windows Servers from RDP brute-force attacks in real-time by integrating directly with the Windows Event Log and Advanced Firewall.
 
-It monitors login attempts in real time, detects suspicious behavior, and (in upcoming versions) automatically blocks malicious IP addresses.
+> "Guard your RDP before attackers do."
 
 ---
 
-## 🚧 Project Status
+## 🚀 Key Features
 
-⚠️ This project is currently under active development.
+* **Real-Time Monitoring:** Directly hooks into Windows Security Event Logs (Event ID 4625) for zero-latency detection.
+* **Dual-Threshold Logic:** Sophisticated detection for both high-frequency (Fast Brute) and low-and-slow (Slow Brute) attacks.
+* **Native Firewall Integration:** Automatically creates blocking rules via the Windows Advanced Firewall (`netsh`) API.
+* **Zero Dependencies:** No .NET, Python, or Java required. A standalone native Win32 binary.
+* **Smart Auto-Config:** Automatically generates a `config.ini` on the first run for easy customization.
+* **High Performance:** Minimal CPU and RAM footprint, optimized for high-traffic server environments.
+* **Whitelist Support:** Prevent accidental lockouts by whitelisting trusted administrative IPs.
 
-Current version: `0.3.0-alpha`
+---
 
-Implemented:
-- [x] Read Windows Security Event Logs (Event ID 4625)
-- [x] Extract source IP address
-- [x] Detect brute-force attempts (basic threshold logic)
-- [x] Automatic IP blocking via Windows Firewall
-- [x] Whitelist system
-- [x] Configuration file support
+## 🛠️ Project Status (v0.3.0-alpha)
 
-Planned:
-- [ ] Run as Windows Service
-- [ ] Secure agent ↔ server communication (TLS + HMAC)
-- [ ] Web-based control panel
-- [ ] RDP port management
-- [ ] Security recommendations (password, username)
+This project is currently under active development.
+
+- [x] **Modular Architecture:** Clean separation of concerns (detector, event, firewall, logger, parser).
+- [x] **INI Configuration:** External configuration support for thresholds and windows.
+- [x] **Auto-Blocking:** Instant IP banning upon reaching thresholds.
+- [x] **Log Optimization:** Silent mode for already-blocked IPs to prevent console spam.
+- [ ] **Windows Service:** Implementation as a background system service.
+- [ ] **Web Dashboard:** Centralized management UI for monitoring multiple agents.
 
 ---
 
 ## ⚙️ How It Works
 
-AegisRDP monitors failed login attempts from Windows Event Logs.
+AegisRDP subscribes to failed login events. When a specific IP address exceeds the allowed failure count within a defined timeframe, AegisRDP immediately executes a block command at the firewall level.
 
-When multiple failed attempts are detected from the same IP within a short time window, the system flags it as a potential brute-force attack.
+### Logic Flow:
+```text
+[FAIL] IP=192.168.1.100 COUNT=1 (Tracking initiated)
+...
+[FAIL] IP=192.168.1.100 COUNT=5 (Threshold reached!)
+>>> FAST BRUTE DETECTED: 192.168.1.100 <<<
+[+] BLOCK APPLIED: 192.168.1.100 (Inbound Rule created)
+````
 
----
+-----
 
-## 🧪 Current Behavior (Alpha)
+## 💻 Build Instructions
 
-Example output:
+Built using the **MSVC** (Microsoft Visual C++) compiler for maximum Windows compatibility.
 
+```cmd
+# Use the Developer Command Prompt for Visual Studio
+cl src\*.c /I src\include /Fe:aegisrdp.exe wevtapi.lib /O2
 ```
 
-[FAIL] IP: 1.2.3.4 | Count: 1
-[FAIL] IP: 1.2.3.4 | Count: 2
-...
+-----
 
-> > > BRUTE DETECTED: 1.2.3.4 <<<
+## 📝 Configuration (`config.ini`)
 
-````
+AegisRDP generates this file automatically on its first execution:
 
----
+```ini
+[Detection]
+threshold=5             ; Attempts for fast brute detection
+time_window=60          ; Time window (seconds) for fast brute
+long_threshold=15       ; Attempts for slow brute detection
+long_window=300         ; Time window (seconds) for slow brute
 
-## 🛠️ Build Instructions
+[Action]
+block_duration=600      ; Ban duration in seconds
+dry_run=0               ; Set to 1 to simulate blocks without active rules
 
-### Using MinGW:
+[Whitelist]
+ips=127.0.0.1,192.168.1.1
+```
 
-```bash
-gcc main.c -o aegisrdp.exe -lwevtapi
-````
-
----
+-----
 
 ## 🧩 Requirements
 
-* Windows (tested on Windows Server environments)
-* Administrator privileges (required for Event Log access)
+  * **OS:** Windows Server 2012/2016/2019/2022 or Windows 10/11.
+  * **Privileges:** Must be executed as **Administrator** (Required for Firewall and Event Log access).
 
----
+-----
 
 ## ⚠️ Disclaimer
 
-This is an early alpha version and should NOT be used in production environments yet.
+This is an **Alpha** version. Use it in production environments at your own risk. The author is not responsible for any accidental lockouts or connectivity issues resulting from improper configuration.
 
----
+-----
+
+## 🚀 Author & Contributing
+
+  * **Author:** [Hoa Tran](https://www.google.com/search?q=https://github.com/hoatran2k11)
+  * **Year:** 2026
+  * **Contributions:** Pull requests, issues, and feature requests are welcome\! If you find this project useful, please give it a ⭐ **Star**.
+
+-----
 
 ## 📜 License
 
-This project is licensed under the MIT License.
-
-Copyright (c) 2026 Hòa Trần
-
----
-
-## ⭐ Attribution
-
-If you use this project, please give credit to the original author.
-
----
-
-## 💡 Future Vision
-
-AegisRDP aims to become a full-featured RDP defense platform, similar to Fail2Ban but designed specifically for Windows, with a modern web-based management interface.
-
----
-
-## 🤝 Contributing
-
-Contributions, ideas, and feedback are welcome!
-
----
-
-## 🚀 Author
-
-**Hòa Trần**
+This project is licensed under the **MIT License**.
